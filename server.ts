@@ -255,6 +255,11 @@ interface OnlineRoom {
   };
   winnerRole?: 'host' | 'guest';
   correctGuess?: string;
+  // Reconnection grace handling (45 seconds)
+  hostDisconnectTimer?: NodeJS.Timeout;
+  guestDisconnectTimer?: NodeJS.Timeout;
+  hostDisconnectExpiry?: number;
+  guestDisconnectExpiry?: number;
 }
 
 const rooms = new Map<string, OnlineRoom>();
@@ -461,12 +466,68 @@ wss.on('connection', (ws) => {
         broadcastRoomState(newRoom);
       }
 
+      // 1B. Reconnect into existing match during 45s grace period
+      else if (msg.type === 'RECONNECT_ROOM') {
+        const code = msg.code?.toUpperCase();
+        const role = msg.role as 'host' | 'guest';
+        const room = rooms.get(code);
+        if (!room) {
+          ws.send(JSON.stringify({ type: 'RECONNECT_FAILED', message: 'Room expired or not found' }));
+          return;
+        }
+
+        if (role === 'host') {
+          if (room.hostDisconnectTimer) {
+            clearTimeout(room.hostDisconnectTimer);
+            room.hostDisconnectTimer = undefined;
+            room.hostDisconnectExpiry = undefined;
+          }
+          userRoomCode = code;
+          userRole = 'host';
+          room.host.ws = ws;
+          ws.send(JSON.stringify({ type: 'RECONNECTED', role: 'host', roomCode: code }));
+          room.guest?.ws?.send(JSON.stringify({ type: 'PEER_RECONNECTED', role: 'host' }));
+          broadcastRoomState(room);
+        } else if (role === 'guest' && room.guest) {
+          if (room.guestDisconnectTimer) {
+            clearTimeout(room.guestDisconnectTimer);
+            room.guestDisconnectTimer = undefined;
+            room.guestDisconnectExpiry = undefined;
+          }
+          userRoomCode = code;
+          userRole = 'guest';
+          room.guest.ws = ws;
+          ws.send(JSON.stringify({ type: 'RECONNECTED', role: 'guest', roomCode: code }));
+          room.host.ws?.send(JSON.stringify({ type: 'PEER_RECONNECTED', role: 'guest' }));
+          broadcastRoomState(room);
+        } else {
+          ws.send(JSON.stringify({ type: 'RECONNECT_FAILED', message: 'Cannot restore session' }));
+        }
+      }
+
       // 2. Guest joins room
       else if (msg.type === 'JOIN_ROOM') {
         const code = msg.code?.toUpperCase();
         const room = rooms.get(code);
         if (!room) {
           ws.send(JSON.stringify({ type: 'ERROR', message: 'Room not found' }));
+          return;
+        }
+
+        // Check if guest is reconnecting during 45s grace period
+        if (room.guest && room.guest.ws === undefined && room.guestDisconnectExpiry && Date.now() < room.guestDisconnectExpiry) {
+          if (room.guestDisconnectTimer) {
+            clearTimeout(room.guestDisconnectTimer);
+            room.guestDisconnectTimer = undefined;
+            room.guestDisconnectExpiry = undefined;
+          }
+          userRoomCode = code;
+          userRole = 'guest';
+          room.guest.ws = ws;
+          if (msg.playerName) room.guest.name = msg.playerName;
+          ws.send(JSON.stringify({ type: 'ROOM_JOINED', roomCode: code, role: 'guest', reconnected: true }));
+          room.host.ws?.send(JSON.stringify({ type: 'PEER_RECONNECTED', role: 'guest' }));
+          broadcastRoomState(room);
           return;
         }
 
@@ -587,6 +648,26 @@ wss.on('connection', (ws) => {
             signal: msg.signal,
           }));
         }
+      }
+
+      // 6C. Live Reactions: forward emoji to the opponent
+      else if (msg.type === 'LIVE_REACTION') {
+        if (!userRoomCode || !userRole) return;
+        const room = rooms.get(userRoomCode);
+        if (!room) return;
+        const targetWs = userRole === 'host' ? room.guest?.ws : room.host.ws;
+        if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+          targetWs.send(JSON.stringify({
+            type: 'LIVE_REACTION',
+            emoji: msg.emoji,
+            fromRole: userRole,
+          }));
+        }
+      }
+
+      // 6D. Ping/Pong for RTT measurement
+      else if (msg.type === 'PING') {
+        ws.send(JSON.stringify({ type: 'PONG' }));
       }
 
       // 7. CONFIRM_WIN / DECLARE_WIN: Secret card owner confirms that the asker's question was the winning guess!
@@ -713,12 +794,62 @@ wss.on('connection', (ws) => {
         if (otherWs && otherWs.readyState === WebSocket.OPEN) {
           otherWs.send(JSON.stringify({ type: 'VOICE_SIGNAL', from: userRole, fromRole: userRole, signal: { type: 'bye' } }));
         }
-        if (userRole === 'host') {
-          // If host leaves, notify guest
-          room.guest?.ws?.send(JSON.stringify({ type: 'HOST_DISCONNECTED' }));
-        } else if (userRole === 'guest') {
-          room.guest = undefined;
-          broadcastRoomState(room);
+
+        const GRACE_PERIOD_MS = 45000;
+
+        if (room.phase === 'LOBBY') {
+          // If in lobby, host leaves closes room; guest leaves removes guest
+          if (userRole === 'host') {
+            room.guest?.ws?.send(JSON.stringify({ type: 'HOST_DISCONNECTED' }));
+            rooms.delete(userRoomCode);
+          } else if (userRole === 'guest') {
+            room.guest = undefined;
+            broadcastRoomState(room);
+          }
+        } else {
+          // In active match: give 45-second grace period to reconnect without forfeit
+          if (userRole === 'host') {
+            room.host.ws = undefined;
+            room.hostDisconnectExpiry = Date.now() + GRACE_PERIOD_MS;
+            if (otherWs && otherWs.readyState === WebSocket.OPEN) {
+              otherWs.send(JSON.stringify({
+                type: 'PEER_DISCONNECTED_GRACE',
+                role: 'host',
+                graceSeconds: 45,
+              }));
+            }
+            if (room.hostDisconnectTimer) clearTimeout(room.hostDisconnectTimer);
+            room.hostDisconnectTimer = setTimeout(() => {
+              // Grace period expired: notify guest that host did not return
+              if (room.host.ws === undefined) {
+                room.guest?.ws?.send(JSON.stringify({
+                  type: 'HOST_DISCONNECTED',
+                  message: 'انتهت مهلة إعادة الاتصال (45 ثانية)',
+                }));
+                rooms.delete(room.code);
+              }
+            }, GRACE_PERIOD_MS);
+          } else if (userRole === 'guest') {
+            if (room.guest) {
+              room.guest.ws = undefined;
+              room.guestDisconnectExpiry = Date.now() + GRACE_PERIOD_MS;
+              if (otherWs && otherWs.readyState === WebSocket.OPEN) {
+                otherWs.send(JSON.stringify({
+                  type: 'PEER_DISCONNECTED_GRACE',
+                  role: 'guest',
+                  graceSeconds: 45,
+                }));
+              }
+              if (room.guestDisconnectTimer) clearTimeout(room.guestDisconnectTimer);
+              room.guestDisconnectTimer = setTimeout(() => {
+                // Grace period expired: remove guest
+                if (room.guest && room.guest.ws === undefined) {
+                  room.guest = undefined;
+                  broadcastRoomState(room);
+                }
+              }, GRACE_PERIOD_MS);
+            }
+          }
         }
       }
     }
