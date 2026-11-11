@@ -81,6 +81,10 @@ export type OnlineEventCallback = (event: {
   fromRole?: string;
   signal?: any;
   mpRoom?: any;
+  emoji?: string;
+  graceSeconds?: number;
+  reconnected?: boolean;
+  role?: string;
 }) => void;
 
 class OnlineGameService {
@@ -91,6 +95,10 @@ class OnlineGameService {
   /** My seat id in a 3/4-player room (also my voice id). Null in the 2-player system. */
   public mpPlayerId: string | null = null;
   private lastRoom: OnlineRoomData | null = null;
+  private explicitDisconnect: boolean = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectDeadline: number = 0;
+  public isReconnecting: boolean = false;
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -121,6 +129,11 @@ class OnlineGameService {
             // mounted and subscribed. Keep the latest one so a screen that opens late still starts from it.
             if (data.type === 'ROOM_UPDATE' && data.room) this.lastRoom = data.room;
 
+            if (data.type === 'RECONNECTED') {
+              this.isReconnecting = false;
+              if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+            }
+
             this.notify(data);
           } catch {
             // ignore
@@ -128,12 +141,56 @@ class OnlineGameService {
         };
 
         this.socket.onclose = () => {
-          // auto reconnect or handle disconnect
+          this.socket = null;
+          if (this.explicitDisconnect || !this.roomCode || !this.userRole) {
+            this.notify({ type: 'SOCKET_CLOSED' });
+            return;
+          }
+
+          // In an online room and unexpectedly disconnected: initiate 45-second reconnect!
+          this.isReconnecting = true;
+          this.reconnectDeadline = Date.now() + 45000;
+          this.notify({ type: 'RECONNECTING', graceSeconds: 45 });
+
+          this.startReconnectLoop();
         };
       } catch (e) {
         reject(e);
       }
     });
+  }
+
+  private startReconnectLoop() {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+
+    const tryReconnect = async () => {
+      if (this.explicitDisconnect || !this.roomCode) {
+        this.isReconnecting = false;
+        return;
+      }
+
+      if (Date.now() > this.reconnectDeadline) {
+        this.isReconnecting = false;
+        this.notify({ type: 'RECONNECT_FAILED', message: 'انتهت مهلة 45 ثانية لإعادة الاتصال' });
+        this.disconnect();
+        return;
+      }
+
+      try {
+        await this.connect();
+        // Send reconnect message
+        this.send({
+          type: 'RECONNECT_ROOM',
+          code: this.roomCode,
+          role: this.userRole,
+        });
+      } catch {
+        // Retry in 2 seconds
+        this.reconnectTimer = setTimeout(tryReconnect, 2000);
+      }
+    };
+
+    this.reconnectTimer = setTimeout(tryReconnect, 1500);
   }
 
   subscribe(callback: OnlineEventCallback) {
@@ -159,10 +216,19 @@ class OnlineGameService {
     category: CategoryDefinition,
     targetScore: number
   ) {
+    this.explicitDisconnect = false;
     await this.connect();
     this.lastRoom = null;
     this.roomCode = code.toUpperCase();
     this.userRole = 'host';
+    try {
+      sessionStorage.setItem('khmn_active_online', JSON.stringify({
+        code: this.roomCode,
+        role: this.userRole,
+        playerName,
+        timestamp: Date.now(),
+      }));
+    } catch {}
     // Wait until the server really created the room: invitations are sent right after this returns
     // (on another socket) and the server only accepts invitations for rooms that exist.
     return new Promise<void>((resolve, reject) => {
@@ -196,10 +262,19 @@ class OnlineGameService {
    * answers with ROOM_JOINED (2 players) or MP_JOINED (3/4 players), or an ERROR (rejected).
    */
   async joinRoom(code: string, playerName: string): Promise<'ROOM_JOINED' | 'MP_JOINED'> {
+    this.explicitDisconnect = false;
     await this.connect();
     this.lastRoom = null;
     this.roomCode = code.toUpperCase();
     this.userRole = 'guest';
+    try {
+      sessionStorage.setItem('khmn_active_online', JSON.stringify({
+        code: this.roomCode,
+        role: this.userRole,
+        playerName,
+        timestamp: Date.now(),
+      }));
+    } catch {}
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         off();
@@ -219,6 +294,38 @@ class OnlineGameService {
       });
       this.send({ type: 'JOIN_ROOM', code: this.roomCode, playerName });
     });
+  }
+
+  async checkSavedSessionAndReconnect(): Promise<boolean> {
+    try {
+      const raw = sessionStorage.getItem('khmn_active_online');
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+      if (data && data.code && data.role && (Date.now() - data.timestamp < 1000 * 60 * 60)) {
+        this.explicitDisconnect = false;
+        await this.connect();
+        this.roomCode = data.code;
+        this.userRole = data.role;
+        this.send({ type: 'RECONNECT_ROOM', code: data.code, role: data.role });
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  disconnect() {
+    this.explicitDisconnect = true;
+    this.isReconnecting = false;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.socket) {
+      this.socket.close();
+      this.socket = null;
+    }
+    this.lastRoom = null;
+    this.roomCode = null;
+    this.userRole = null;
+    this.mpPlayerId = null;
+    try { sessionStorage.removeItem('khmn_active_online'); } catch {}
   }
 
   // ---- 3 / 4 players online ----
@@ -355,12 +462,28 @@ class OnlineGameService {
     this.send({ type: 'NEXT_ROUND' });
   }
 
+  /** Send a live emoji reaction to the opponent. */
+  sendReaction(emoji: string) {
+    this.send({ type: 'LIVE_REACTION', emoji });
+  }
+
+  /** Send a ping to measure RTT. The server replies with PONG. */
+  sendPing() {
+    this.send({ type: 'PING' });
+  }
+
   /** The most recent ROOM_UPDATE of the room I am in (null when not in a room). */
   getLastRoom(): OnlineRoomData | null {
     return this.lastRoom;
   }
 
   disconnect() {
+    this.explicitDisconnect = true;
+    this.isReconnecting = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.socket) {
       this.socket.close();
       this.socket = null;
@@ -369,6 +492,9 @@ class OnlineGameService {
     this.roomCode = null;
     this.userRole = null;
     this.mpPlayerId = null;
+    try {
+      sessionStorage.removeItem('khmn_active_online');
+    } catch {}
   }
 }
 

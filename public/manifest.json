@@ -1,0 +1,28 @@
+{
+  "name": "إيه اللي معايا؟ | What Do I Have?",
+  "short_name": "إيه اللي معايا؟",
+  "description": "لعبة اجتماعية واستنتاج ذكية: أنت ترى صورة خصمك وهو يرى صورتك.. اطرح أسئلة ذكية وخمّن بطاقتك السرية أولاً!",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070D1E",
+  "theme_color": "#0B132B",
+  "dir": "rtl",
+  "lang": "ar",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/hidden-card.webp",
+      "sizes": "512x512",
+      "type": "image/webp",
+      "purpose": "any"
+    }
+  ]
+}

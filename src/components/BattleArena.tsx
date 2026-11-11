@@ -4,7 +4,11 @@ import { sound } from '../utils/audio';
 import { isCorrectGuess } from '../utils/normalize';
 import { VoiceChatBar, useJoinVoice } from './VoiceChatBar';
 import { HiddenCard } from './HiddenCard';
+import { LiveReactions, ReactionEmoji } from './LiveReactions';
+import { PresenceBadge } from './PresenceBadge';
 import { LOCAL_ARENA_KEY, loadLocalArena, saveLocalArena } from '../utils/gameStorage';
+import { onlineService } from '../services/onlineGame';
+import { useVoiceChat } from '../utils/webrtcAudio';
 import {
   Send,
   Check,
@@ -151,6 +155,66 @@ export const BattleArena: React.FC<BattleArenaProps> = ({
   const myVoiceId = onlineRole === 'host' ? 'host' : 'guest';
   const otherVoiceId = onlineRole === 'host' ? 'guest' : 'host';
   useJoinVoice(isOnlineMatch && onlineRole ? myVoiceId : null, [otherVoiceId]);
+
+  // Voice state for presence badge
+  const voiceState = useVoiceChat();
+  const opponentPeerState = voiceState.peers[otherVoiceId];
+
+  // --- Live Reactions (Online only) ---
+  const [incomingReaction, setIncomingReaction] = useState<{ emoji: ReactionEmoji; timestamp: number } | null>(null);
+
+  useEffect(() => {
+    if (!isOnlineMatch) return;
+    const unsub = onlineService.subscribe((event) => {
+      if (event.type === 'LIVE_REACTION' && event.fromRole !== onlineRole) {
+        setIncomingReaction({ emoji: event.emoji as ReactionEmoji, timestamp: Date.now() });
+      }
+    });
+    return unsub;
+  }, [isOnlineMatch, onlineRole]);
+
+  const handleSendReaction = (emoji: ReactionEmoji) => {
+    if (isOnlineMatch) {
+      onlineService.sendReaction(emoji);
+    } else if (isBotMatch) {
+      const botReplies: ReactionEmoji[] = ['🔥', '😂', '👏', '😱', '❤️', '❗'];
+      const randomReply = botReplies[Math.floor(Math.random() * botReplies.length)];
+      setTimeout(() => {
+        setIncomingReaction({ emoji: randomReply, timestamp: Date.now() });
+      }, 1100);
+    }
+  };
+
+  // --- Ping Measurement (Online only) ---
+  const [pingMs, setPingMs] = useState<number | null>(null);
+  const [wsConnected, setWsConnected] = useState(true);
+
+  useEffect(() => {
+    if (!isOnlineMatch) return;
+    let pingInterval: ReturnType<typeof setInterval>;
+    let pingSentAt = 0;
+
+    const unsub = onlineService.subscribe((event) => {
+      if (event.type === 'PONG') {
+        const rtt = Date.now() - pingSentAt;
+        setPingMs(rtt);
+        setWsConnected(true);
+      }
+    });
+
+    const doPing = () => {
+      pingSentAt = Date.now();
+      onlineService.sendPing();
+    };
+
+    doPing();
+    pingInterval = setInterval(doPing, 5000);
+
+    return () => {
+      clearInterval(pingInterval);
+      unsub();
+    };
+  }, [isOnlineMatch]);
 
   // Is it my turn to ask right now? (Only when no question is pending!)
   const isMyTurnToAsk = isOnlineMatch
@@ -400,6 +464,10 @@ export const BattleArena: React.FC<BattleArenaProps> = ({
             <HiddenCard
               label={lang === 'ar' ? 'صورتك المخفية' : 'Your hidden picture'}
               active={viewerId === activePlayerId}
+              secretImageUrl={viewerIsP1 ? p1Card?.imageUrl : p2Card?.imageUrl}
+              secretTitle={viewerIsP1 ? p1Card?.title : p2Card?.title}
+              interactive={true}
+              lang={lang}
             />
 
             <div className="text-[11px] font-bold text-amber-300 flex items-center gap-1">
@@ -465,6 +533,24 @@ export const BattleArena: React.FC<BattleArenaProps> = ({
             <span className="font-mono tracking-tight text-[12px]">VS</span>
           </div>
         </div>
+      </div>
+
+      {/* PRESENCE BADGE & LIVE REACTIONS BAR (Always active & visible) */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <PresenceBadge
+          peerVoiceState={opponentPeerState}
+          wsConnected={isOnlineMatch ? wsConnected : true}
+          pingMs={isOnlineMatch ? pingMs : 22}
+          mode={isOnlineMatch ? 'online' : (isBotMatch ? 'bot' : 'offline')}
+          lang={lang}
+        />
+        {/* Live Reactions bar */}
+        <LiveReactions
+          incomingReaction={incomingReaction}
+          onSendReaction={handleSendReaction}
+          showBar={true}
+          lang={lang}
+        />
       </div>
 
       {/* 2. TURN CALLOUT BANNER (Clearly stating whose turn it is to ask about their card) */}

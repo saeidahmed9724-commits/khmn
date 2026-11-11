@@ -3,6 +3,7 @@ import { BookOpen, Bot, HelpCircle, Lock, Settings, Smartphone, Users, Volume2, 
 import { sound } from '../utils/audio';
 import { GameLogoBanner } from './GameLogoBanner';
 import { Avatar } from './social/Avatar';
+import { InstallPwaPrompt } from './InstallPwaPrompt';
 import type { FriendView } from '../services/social';
 
 interface HomeScreenProps {
@@ -189,6 +190,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </button>
         </div>
       </div>
+
+      {/* PWA Install prompt */}
+      <InstallPwaPrompt lang={lang} />
 
       {/* footer nav */}
       <div className={`${GLASS} grid grid-cols-3 py-2`}>

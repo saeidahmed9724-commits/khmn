@@ -41,6 +41,7 @@ import { FriendsScreen } from './components/social/FriendsScreen';
 import { FriendsSetupScreen } from './components/social/FriendsSetupScreen';
 import { InviteOverlay } from './components/social/InviteOverlay';
 import { AccountSetupModal } from './components/social/AccountSetupModal';
+import { ReconnectGraceOverlay } from './components/ReconnectGraceOverlay';
 
 /** Screens where the player is "in a game" (friends see 🎮 next to their name). */
 const IN_GAME_PHASES: GamePhase[] = [
@@ -84,6 +85,11 @@ export default function App() {
     guesserRole: 'host' | 'guest';
     guesserName: string;
     guessText: string;
+  } | null>(null);
+  const [reconnectGrace, setReconnectGrace] = useState<{
+    type: 'self' | 'peer';
+    initialSeconds: number;
+    peerName?: string;
   } | null>(null);
 
   // Players (Dynamic - populated upon entering/creating game)
@@ -152,6 +158,17 @@ export default function App() {
       window.history.replaceState({}, '', window.location.pathname);
       setPrefillAdd(urlAdd);
       ensureAccount(() => setGamePhase('FRIENDS'));
+    } else {
+      // Check if player refreshed the page during an active online game
+      onlineService.checkSavedSessionAndReconnect().then((reconnecting) => {
+        if (reconnecting) {
+          setGameMode('ONLINE_MULTIPLAYER');
+          setReconnectGrace({
+            type: 'self',
+            initialSeconds: 45,
+          });
+        }
+      }).catch(() => {});
     }
   }, []);
 
@@ -294,6 +311,30 @@ export default function App() {
       } else if (event.type === 'VOICE_SIGNAL' && event.signal) {
         // One voice engine for every online mode; `from` is the other player's id.
         liveVoiceManager.handleSignal(String(event.from ?? event.fromRole), event.signal);
+      } else if (event.type === 'RECONNECTING') {
+        setReconnectGrace({
+          type: 'self',
+          initialSeconds: event.graceSeconds || 45,
+        });
+      } else if (event.type === 'PEER_DISCONNECTED_GRACE') {
+        const peerName = event.role === 'host' ? player1.name : player2.name;
+        setReconnectGrace({
+          type: 'peer',
+          initialSeconds: event.graceSeconds || 45,
+          peerName: peerName || (lang === 'ar' ? 'الخصم' : 'Opponent'),
+        });
+      } else if (event.type === 'RECONNECTED' || event.type === 'PEER_RECONNECTED') {
+        setReconnectGrace(null);
+        sound.playTurnChime();
+      } else if (event.type === 'RECONNECT_FAILED') {
+        setReconnectGrace(null);
+        alert(lang === 'ar' ? 'انتهت مهلة إعادة الاتصال (45 ثانية).' : 'Reconnection timed out (45s).');
+        setGamePhase('HOME');
+      } else if (event.type === 'HOST_DISCONNECTED') {
+        setReconnectGrace(null);
+        alert(lang === 'ar' ? (event.message || 'المضيف غادر الغرفة.') : (event.message || 'Host disconnected.'));
+        onlineService.disconnect();
+        setGamePhase('HOME');
       }
     });
 
@@ -886,6 +927,16 @@ export default function App() {
         onClose={() => setIsJoinModalOpen(false)}
         lang={lang}
       />
+
+      {/* Reconnection Grace Overlay (45s window on unexpected disconnect) */}
+      {reconnectGrace && (
+        <ReconnectGraceOverlay
+          type={reconnectGrace.type}
+          initialSeconds={reconnectGrace.initialSeconds}
+          peerName={reconnectGrace.peerName}
+          lang={lang}
+        />
+      )}
 
       {/* Friends: invitation card (on top of any screen) + one-time profile */}
       <InviteOverlay lang={lang} onAccept={handleAcceptInvite} />

@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import confetti from 'canvas-confetti';
+import { motion } from 'motion/react';
 import { Player, PlayerChoice, CategoryDefinition } from '../types/game';
 import { sound } from '../utils/audio';
+import { hapticSuccess, hapticTap } from '../utils/haptics';
 import { ArrowRight, Sparkles, Check } from 'lucide-react';
 
 interface RevealScreenProps {
@@ -31,11 +33,13 @@ export const RevealScreen: React.FC<RevealScreenProps> = ({
 
   useEffect(() => {
     sound.playVictoryFanfare();
+    hapticSuccess();
 
     // Trigger celebratory flip animation after 250ms
     const flipTimer = setTimeout(() => {
       setIsFlipped(true);
       sound.playCardFlip();
+      hapticTap();
     }, 300);
 
     // Warm playful confetti
@@ -51,14 +55,25 @@ export const RevealScreen: React.FC<RevealScreenProps> = ({
     return () => clearTimeout(flipTimer);
   }, []);
 
+  const handleFlipToggle = () => {
+    setIsFlipped(!isFlipped);
+    sound.playCardFlip();
+    hapticTap();
+  };
+
   return (
     <div className="w-full max-w-md mx-auto py-4 sm:py-6 px-4 text-center animate-scale-up space-y-4">
       {/* 1. Headline */}
       <div className="space-y-1">
-        <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-400 text-slate-950 text-xs font-black rounded-full shadow-sm">
+        <motion.div
+          className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-400 text-slate-950 text-xs font-black rounded-full shadow-sm"
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ delay: 0.1, type: 'spring', stiffness: 300, damping: 15 }}
+        >
           <Sparkles className="w-3.5 h-3.5" />
           <span>+1 POINT</span>
-        </div>
+        </motion.div>
 
         <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
           {lang === 'ar' ? `${winner.name} عرفـها! 🎉` : `${winner.name} GUESSED IT! 🎉`}
@@ -77,21 +92,24 @@ export const RevealScreen: React.FC<RevealScreenProps> = ({
             {p1.name}
           </div>
 
-          <div
+          <motion.div
             className="perspective-1000 w-full aspect-[3/4] max-w-[200px] cursor-pointer"
-            onClick={() => {
-              setIsFlipped(!isFlipped);
-              sound.playCardFlip();
-            }}
+            onClick={handleFlipToggle}
             title={lang === 'ar' ? 'اضغط لقلب البطاقة' : 'Tap to flip card'}
+            whileTap={{ scale: 0.97 }}
           >
-            <div
-              className={`relative w-full h-full rounded-2xl transition-transform duration-700 shadow-xl ${
-                isFlipped ? 'rotate-y-180' : ''
-              }`}
+            <motion.div
+              className="relative w-full h-full rounded-2xl shadow-xl"
               style={{
                 transformStyle: 'preserve-3d',
                 WebkitTransformStyle: 'preserve-3d',
+              }}
+              animate={{
+                rotateY: isFlipped ? 180 : 0,
+              }}
+              transition={{
+                duration: 0.7,
+                ease: [0.23, 1, 0.32, 1], // smooth deceleration
               }}
             >
               {/* Card Back (Locked mystery state) */}
@@ -133,14 +151,19 @@ export const RevealScreen: React.FC<RevealScreenProps> = ({
                   {p1Card.title}
                 </div>
               </div>
-            </div>
-          </div>
+            </motion.div>
+          </motion.div>
 
           {winner.id === p1.id && (
-            <div className="inline-flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 rounded-full">
+            <motion.div
+              className="inline-flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 rounded-full"
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              transition={{ delay: 0.5, type: 'spring' }}
+            >
               <Check className="w-3.5 h-3.5" />
               <span>{lang === 'ar' ? 'فائز الجولة' : 'Round Winner'}</span>
-            </div>
+            </motion.div>
           )}
         </div>
 
@@ -150,21 +173,24 @@ export const RevealScreen: React.FC<RevealScreenProps> = ({
             {p2.name}
           </div>
 
-          <div
+          <motion.div
             className="perspective-1000 w-full aspect-[3/4] max-w-[200px] cursor-pointer"
-            onClick={() => {
-              setIsFlipped(!isFlipped);
-              sound.playCardFlip();
-            }}
+            onClick={handleFlipToggle}
             title={lang === 'ar' ? 'اضغط لقلب البطاقة' : 'Tap to flip card'}
+            whileTap={{ scale: 0.97 }}
           >
-            <div
-              className={`relative w-full h-full rounded-2xl transition-transform duration-700 shadow-xl ${
-                isFlipped ? 'rotate-y-180' : ''
-              }`}
+            <motion.div
+              className="relative w-full h-full rounded-2xl shadow-xl"
               style={{
                 transformStyle: 'preserve-3d',
                 WebkitTransformStyle: 'preserve-3d',
+              }}
+              animate={{
+                rotateY: isFlipped ? 180 : 0,
+              }}
+              transition={{
+                duration: 0.7,
+                ease: [0.23, 1, 0.32, 1],
               }}
             >
               {/* Card Back */}
@@ -206,14 +232,19 @@ export const RevealScreen: React.FC<RevealScreenProps> = ({
                   {p2Card.title}
                 </div>
               </div>
-            </div>
-          </div>
+            </motion.div>
+          </motion.div>
 
           {winner.id === p2.id && (
-            <div className="inline-flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 rounded-full">
+            <motion.div
+              className="inline-flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 rounded-full"
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              transition={{ delay: 0.5, type: 'spring' }}
+            >
               <Check className="w-3.5 h-3.5" />
               <span>{lang === 'ar' ? 'فائز الجولة' : 'Round Winner'}</span>
-            </div>
+            </motion.div>
           )}
         </div>
       </div>
@@ -222,10 +253,7 @@ export const RevealScreen: React.FC<RevealScreenProps> = ({
       <div className="flex justify-center pt-1">
         <button
           type="button"
-          onClick={() => {
-            setIsFlipped(!isFlipped);
-            sound.playCardFlip();
-          }}
+          onClick={handleFlipToggle}
           className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-[#1b2150]/60 hover:bg-slate-700 border border-indigo-300/30 rounded-full text-xs font-bold text-slate-300 hover:text-white transition-all cursor-pointer active:scale-95 shadow-sm"
         >
           <span>🔄</span>
